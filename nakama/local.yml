@@ -1,0 +1,22 @@
+name: triad-nakama-1
+data_dir: '/nakama/data/'
+
+logger:
+  level: 'INFO'
+  stdout: true
+
+console:
+  port: 7351
+  username: 'admin'
+  password: 'password'
+
+runtime:
+  path: '/nakama/data/modules'
+  js_entrypoint: 'build/index.js'
+
+socket:
+  max_message_size_bytes: 409600
+  max_request_size_bytes: 131072
+
+matchmaker:
+  interval_sec: 3
