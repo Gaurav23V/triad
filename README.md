@@ -194,20 +194,75 @@ Covers move validation, win detection, and draw detection (`src/game_logic.test.
 
 ```
 triad/
-├── docker-compose.yml    # postgres + nakama + frontend
+├── docker-compose.yml    # postgres + nakama + frontend (local)
+├── render.yaml           # Render Blueprint: Postgres + Nakama Docker web service
 ├── .env.example          # Vite env template (local npm run dev)
 ├── PRD.md                # Product requirements (assignment brief)
 ├── README.md
 ├── nakama/               # TypeScript server module, Dockerfile, local.yml
+│   ├── entrypoint-render.sh  # Render: migrate + Nakama on $PORT
 │   ├── src/
 │   └── Dockerfile
-└── frontend/             # React + Vite SPA, Dockerfile
+└── frontend/             # React + Vite SPA, Dockerfile, vercel.json
     └── src/
 ```
 
-## Production hosting (high level)
+## Production deploy (Render + Vercel)
 
-Vercel and similar **static/serverless** hosts fit the **frontend** well if you configure **`VITE_*`** to your public Nakama URL. **Nakama + PostgreSQL** need a **long-running** environment (containers or VMs) with **TCP/WebSocket** access—e.g. **Fly.io**, **Railway**, **Render**, **DigitalOcean**, **AWS ECS/Fargate**, or a **VPS** running Docker. Use **TLS**, lock down the **console**, and put a **reverse proxy** in front of Nakama in real deployments.
+Split: **Nakama + Postgres on Render** (long-lived WebSockets), **static SPA on Vercel** (CDN). Order: **backend first**, then point the frontend build at the Render URL.
+
+### Backend (Render)
+
+1. Push this repo to GitHub (`main` includes [`render.yaml`](./render.yaml)).
+2. In the [Render dashboard](https://dashboard.render.com/), use **Blueprint** (or **New → Blueprint**) and select **`Gaurav23V/triad`**. Render will create:
+   - **Postgres** `triad-db` (free tier; see [Render free limits](https://docs.render.com/docs/free)—including **30-day expiry** for free databases unless upgraded).
+   - **Web service** `triad-nakama` (Docker build from `./nakama/Dockerfile`, context `./nakama`) with **`DATABASE_URL`** injected from the database.
+3. Wait until the web service is **Live** and note its URL, e.g. `https://triad-nakama.onrender.com` (exact hostname is assigned by Render).
+
+The image uses [`nakama/entrypoint-render.sh`](./nakama/entrypoint-render.sh): runs migrations, then starts Nakama with **`-socket.port $PORT`** (Render’s dynamic port).
+
+**CLI:** `render blueprints validate render.yaml` checks the file. `render workspace set …` and `render services list` / `render logs` help debug deploys.
+
+### Frontend (Vercel)
+
+From [`frontend/`](./frontend/) (after `source ~/.bashrc` if `vercel` is not on `PATH`):
+
+```bash
+cd frontend
+vercel link          # link to a Vercel project (create one if needed)
+```
+
+Add **Production** environment variables (Vite inlines them at **build** time):
+
+| Variable | Example / note |
+|----------|----------------|
+| `VITE_NAKAMA_HOST` | Hostname only from Render, e.g. `triad-nakama-xxxx.onrender.com` |
+| `VITE_NAKAMA_PORT` | `443` |
+| `VITE_NAKAMA_USE_SSL` | `true` |
+| `VITE_NAKAMA_SERVER_KEY` | Must match Nakama (default in `local.yml` / client is `defaultkey` for demos—change for real production) |
+
+```bash
+vercel env add VITE_NAKAMA_HOST production
+# … repeat for each variable
+vercel deploy --prod
+```
+
+[`frontend/vercel.json`](./frontend/vercel.json) sets the Vite framework preset, build command, and `dist` output.
+
+### Deployed URLs (this repo)
+
+| Piece | URL |
+|--------|-----|
+| **Game (Vercel)** | *Set after you deploy—your `*.vercel.app` or custom domain* |
+| **Nakama (Render)** | *Your `triad-nakama` service URL from the Render dashboard* |
+
+Update the table above after deploy so others know where to play.
+
+### Free-tier caveats
+
+- Render **free web** services **spin down** after idle time; first request after sleep can take ~1 minute.
+- Render **free Postgres** has a **30-day** lifetime unless upgraded ([docs](https://docs.render.com/docs/free)).
+- Use **TLS** (`wss` / `https`) in production; change **console** and **server** secrets away from local defaults for anything public.
 
 ## Known limitations
 

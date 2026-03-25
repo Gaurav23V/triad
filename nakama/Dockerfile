@@ -10,3 +10,6 @@ FROM heroiclabs/nakama:3.22.0
 RUN mkdir -p /nakama/data/modules/build
 COPY --from=builder /build/build/index.js /nakama/data/modules/build/index.js
 COPY local.yml /nakama/data/local.yml
+COPY entrypoint-render.sh /nakama/entrypoint-render.sh
+RUN chmod +x /nakama/entrypoint-render.sh
+ENTRYPOINT ["/usr/bin/tini", "--", "/nakama/entrypoint-render.sh"]
