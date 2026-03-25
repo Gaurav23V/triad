@@ -61,17 +61,23 @@ export default function App() {
 
   const disconnect = useCallback(async () => {
     const s = socketRef.current
-    if (s) {
-      try {
-        if (matchRef.current) await s.leaveMatch(matchRef.current.match_id)
-      } catch {
-        /* ignore */
-      }
-      s.disconnect(false)
-    }
+    const m = matchRef.current
     socketRef.current = null
     matchRef.current = null
     setGame(null)
+    if (s) {
+      try {
+        if (m) await s.leaveMatch(m.match_id)
+      } catch {
+        /* ignore */
+      }
+      try {
+        s.disconnect(false)
+      } catch {
+        /* ignore */
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
   }, [])
 
   useEffect(() => {
