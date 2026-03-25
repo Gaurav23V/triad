@@ -26,6 +26,18 @@ interface LbRow {
   metadata?: { losses?: number; draws?: number }
 }
 
+function getErrorMessage(e: unknown): string {
+  console.error('[Triad Error]', e)
+  if (e instanceof Error) return e.message
+  if (typeof e === 'object' && e !== null) {
+    const errObj = e as Record<string, unknown>
+    if (errObj.message) return String(errObj.message)
+    if (errObj.error) return String(errObj.error)
+    return JSON.stringify(e)
+  }
+  return String(e)
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('login')
   const [username, setUsername] = useState('')
@@ -87,14 +99,18 @@ export default function App() {
         }
       }
       socket.onmatchmakermatched = async (mm) => {
+        console.log('[Matchmaker] Received matchmakermatched event:', mm)
         try {
           mmTicketRef.current = null
-          const m = await socket.joinMatch(undefined, mm.token)
+          console.log('[Matchmaker] Joining match:', mm.match_id)
+          const m = await socket.joinMatch(mm.match_id)
+          console.log('[Matchmaker] Joined match:', m)
           matchRef.current = m
           setScreen('game')
           setBusy(false)
         } catch (e) {
-          setErr(String(e))
+          console.error('[Matchmaker] Error joining match:', e)
+          setErr(getErrorMessage(e))
           setBusy(false)
           setScreen('menu')
         }
@@ -120,7 +136,7 @@ export default function App() {
       await ensureSocket(sess)
       setScreen('menu')
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
     } finally {
       setBusy(false)
     }
@@ -135,7 +151,7 @@ export default function App() {
       const payload = res.payload as { rooms?: OpenRoom[] }
       setRooms(payload.rooms ?? [])
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
     } finally {
       setBusy(false)
     }
@@ -152,7 +168,7 @@ export default function App() {
       setLbYou(p.you ?? null)
       setScreen('leaderboard')
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
     } finally {
       setBusy(false)
     }
@@ -168,7 +184,7 @@ export default function App() {
       matchRef.current = m
       setScreen('game')
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
     } finally {
       setBusy(false)
     }
@@ -187,7 +203,7 @@ export default function App() {
       if (!p.matchId) throw new Error('No match id')
       await joinMatchId(p.matchId)
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
       setBusy(false)
     }
   }
@@ -207,7 +223,7 @@ export default function App() {
       if (!p.matchId) throw new Error('Room not found')
       await joinMatchId(p.matchId)
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
       setBusy(false)
     }
   }
@@ -218,16 +234,18 @@ export default function App() {
     setBusy(true)
     setScreen('matching')
     try {
+      console.log('[QuickMatch] Starting, mode:', modeChoice)
       const socket = await ensureSocket(session)
-      const ticket = await socket.addMatchmaker(
-        '+properties.game:triad +properties.mode:' + modeChoice,
-        2,
-        2,
-        { game: 'triad', mode: modeChoice },
-      )
+      console.log('[QuickMatch] Socket ready')
+      const query = '+properties.game:triad +properties.mode:' + modeChoice
+      const props = { game: 'triad', mode: modeChoice }
+      console.log('[QuickMatch] Calling addMatchmaker with query:', query, 'props:', props)
+      const ticket = await socket.addMatchmaker(query, 2, 2, props)
+      console.log('[QuickMatch] Ticket received:', ticket)
       mmTicketRef.current = ticket.ticket
     } catch (e) {
-      setErr(String(e))
+      console.error('[QuickMatch] Error:', e)
+      setErr(getErrorMessage(e))
       setBusy(false)
       setScreen('menu')
     }
@@ -241,7 +259,7 @@ export default function App() {
     try {
       await socket.sendMatchState(m.match_id, OpCode.MOVE, encodeJson({ cell }))
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
     }
   }
 
@@ -252,7 +270,7 @@ export default function App() {
     try {
       await socket.sendMatchState(m.match_id, OpCode.CLAIM_FORFEIT, new Uint8Array())
     } catch (e) {
-      setErr(String(e))
+      setErr(getErrorMessage(e))
     }
   }
 
