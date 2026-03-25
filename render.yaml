@@ -1,5 +1,9 @@
 # Render Blueprint: https://render.com/docs/blueprint-spec
 # Apply from the Render dashboard (Blueprint) after this file is on the default branch.
+#
+# After sync, set these in the dashboard if prompted (sync: false):
+#   VITE_NAKAMA_HOST — hostname only, e.g. triad-nakama.onrender.com (your Nakama service URL)
+#   VITE_NAKAMA_SERVER_KEY — must match Nakama server key (not defaultkey in production)
 
 databases:
   - name: triad-db
@@ -23,3 +27,22 @@ services:
         fromDatabase:
           name: triad-db
           property: connectionString
+
+  - type: web
+    name: triad-frontend
+    runtime: static
+    repo: https://github.com/Gaurav23V/triad.git
+    branch: main
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./frontend/dist
+    autoDeployTrigger: commit
+    envVars:
+      - key: VITE_NAKAMA_PORT
+        value: "443"
+      - key: VITE_NAKAMA_USE_SSL
+        value: "true"
+      - key: VITE_NAKAMA_HOST
+        sync: false
+      - key: VITE_NAKAMA_SERVER_KEY
+        sync: false

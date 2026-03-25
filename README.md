@@ -195,7 +195,7 @@ Covers move validation, win detection, and draw detection (`src/game_logic.test.
 ```
 triad/
 ├── docker-compose.yml    # postgres + nakama + frontend (local)
-├── render.yaml           # Render Blueprint: Postgres + Nakama Docker web service
+├── render.yaml           # Render Blueprint: Postgres + Nakama (Docker) + static SPA
 ├── .env.example          # Vite env template (local npm run dev)
 ├── PRD.md                # Product requirements (assignment brief)
 ├── README.md
@@ -207,56 +207,50 @@ triad/
     └── src/
 ```
 
-## Production deploy (Render + Vercel)
+## Production deploy (Render Blueprint)
 
-Split: **Nakama + Postgres on Render** (long-lived WebSockets), **static SPA on Vercel** (CDN). Order: **backend first**, then point the frontend build at the Render URL.
-
-### Backend (Render)
+[`render.yaml`](./render.yaml) defines **Postgres**, **Nakama** (Docker web service), and **`triad-frontend`** (static site: `rootDir` `frontend`, publish `./frontend/dist`). Vite reads **`VITE_*`** at **build** time on Render.
 
 1. Push this repo to GitHub (`main` includes [`render.yaml`](./render.yaml)).
-2. In the [Render dashboard](https://dashboard.render.com/), use **Blueprint** (or **New → Blueprint**) and select **`Gaurav23V/triad`**. Render will create:
+2. In the [Render dashboard](https://dashboard.render.com/), use **Blueprint** and select your repo. Render will create or update:
    - **Postgres** `triad-db` (free tier; see [Render free limits](https://docs.render.com/docs/free)—including **30-day expiry** for free databases unless upgraded).
-   - **Web service** `triad-nakama` (Docker build from `./nakama/Dockerfile`, context `./nakama`) with **`DATABASE_URL`** injected from the database.
-3. Wait until the web service is **Live** and note its URL, e.g. `https://triad-nakama.onrender.com` (exact hostname is assigned by Render).
+   - **Web service** `triad-nakama` (Docker from `./nakama/Dockerfile`, context `./nakama`) with **`DATABASE_URL`** from the database.
+   - **Static site** `triad-frontend` (`npm install && npm run build` under `frontend/`).
+3. When the Blueprint prompts or on the static site **Environment** tab, set **`VITE_NAKAMA_HOST`** (hostname only, e.g. `triad-nakama.onrender.com`) and **`VITE_NAKAMA_SERVER_KEY`** (must match Nakama). The Blueprint already sets **`VITE_NAKAMA_PORT=443`** and **`VITE_NAKAMA_USE_SSL=true`**.
+4. Redeploy **`triad-frontend`** after changing `VITE_*` so the bundle is rebuilt.
 
-The image uses [`nakama/entrypoint-render.sh`](./nakama/entrypoint-render.sh): runs migrations, then starts Nakama with **`-socket.port $PORT`** (Render’s dynamic port).
+The Nakama image uses [`nakama/entrypoint-render.sh`](./nakama/entrypoint-render.sh): migrations, then Nakama with **`-socket.port $PORT`**.
 
 **CLI:** `render blueprints validate render.yaml` checks the file. `render workspace set …` and `render services list` / `render logs` help debug deploys.
 
-### Frontend (Vercel)
+### Optional: frontend on Vercel instead
 
-From [`frontend/`](./frontend/) (after `source ~/.bashrc` if `vercel` is not on `PATH`):
-
-```bash
-cd frontend
-vercel link          # link to a Vercel project (create one if needed)
-```
-
-Add **Production** environment variables (Vite inlines them at **build** time):
-
-| Variable | Example / note |
-|----------|----------------|
-| `VITE_NAKAMA_HOST` | Hostname only from Render, e.g. `triad-nakama-xxxx.onrender.com` |
-| `VITE_NAKAMA_PORT` | `443` |
-| `VITE_NAKAMA_USE_SSL` | `true` |
-| `VITE_NAKAMA_SERVER_KEY` | Must match Nakama (default in `local.yml` / client is `defaultkey` for demos—change for real production) |
-
-```bash
-vercel env add VITE_NAKAMA_HOST production
-# … repeat for each variable
-vercel deploy --prod
-```
-
-[`frontend/vercel.json`](./frontend/vercel.json) sets the Vite framework preset, build command, and `dist` output.
+You can still deploy the SPA to Vercel: set the same **`VITE_*`** at build time and use [`frontend/vercel.json`](./frontend/vercel.json).
 
 ### Deployed URLs (this repo)
 
 | Piece | URL |
 |--------|-----|
-| **Game (Vercel)** | *Set after you deploy—your `*.vercel.app` or custom domain* |
-| **Nakama (Render)** | *Your `triad-nakama` service URL from the Render dashboard* |
+| **Game (play here)** | [https://triad-frontend.onrender.com](https://triad-frontend.onrender.com) |
+| **Nakama API + WebSocket** | [https://triad-nakama.onrender.com](https://triad-nakama.onrender.com) |
 
-Update the table above after deploy so others know where to play.
+If you rename services or recreate them on Render, hostnames may differ—check each service’s **URL** in the [dashboard](https://dashboard.render.com/).
+
+### What’s deployed (high level)
+
+- **Frontend:** Static site **`triad-frontend`** (Vite production build from `frontend/`), served on the URL above. It was built with `VITE_NAKAMA_*` pointing at **`triad-nakama.onrender.com`** (HTTPS / `wss` on 443).
+- **Backend:** Docker web service **`triad-nakama`** (image from `nakama/Dockerfile`), same repo, **`rootDir`** `nakama`. That *is* the deployed game server (authoritative matches, RPCs, sockets).
+- **Database:** Render Postgres **`triad-db`**; Nakama uses **`DATABASE_URL`** from that instance (migrations run in the container entrypoint).
+
+So yes: **both UI and Nakama are intended to be live on Render**; the table links are the public entry points.
+
+### Quick checks (you should verify)
+
+1. Open the **game URL** and complete sign-in / quick match or create room—confirms SPA + Nakama + DB end-to-end.
+2. In the dashboard, confirm **`triad-nakama`** latest deploy is **Live** and logs show no crash loop.
+3. After idle time, **free** web services **cold start** (~up to a minute); retry if the first load is slow.
+4. **Free Postgres** on Render has a **limited lifetime** on the free tier ([docs](https://docs.render.com/docs/free))—note the DB expiry in the dashboard if you rely on this deploy long term.
+5. For anything beyond a demo, rotate **`defaultkey`** / console credentials, update **`VITE_NAKAMA_SERVER_KEY`** on the static site, and redeploy the frontend.
 
 ### Free-tier caveats
 
