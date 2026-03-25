@@ -47,6 +47,11 @@ export default function App() {
   const socketRef = useRef<Socket | null>(null)
   const matchRef = useRef<Match | null>(null)
   const mmTicketRef = useRef<string | null>(null)
+  const sessionRef = useRef<Session | null>(null)
+  const screenRef = useRef<Screen>('login')
+  const intentionalLeavePendingRef = useRef(false)
+  const intentionalLeaveResolveRef = useRef<(() => void) | null>(null)
+  const reconnectBusyRef = useRef(false)
 
   const [game, setGame] = useState<GameStatePayload | null>(null)
   const [joinCode, setJoinCode] = useState('')
@@ -58,6 +63,14 @@ export default function App() {
   const [nowTick, setNowTick] = useState(() => Date.now())
 
   const client = useMemo(() => createNakamaClient(), [])
+
+  useEffect(() => {
+    sessionRef.current = session
+  }, [session])
+
+  useEffect(() => {
+    screenRef.current = screen
+  }, [screen])
 
   const disconnect = useCallback(async () => {
     const s = socketRef.current
@@ -98,11 +111,44 @@ export default function App() {
       socket.onmatchdata = (md) => {
         if (md.match_id !== matchRef.current?.match_id) return
         if (md.op_code === OpCode.STATE) {
-          setGame(decodeJson<GameStatePayload>(md.data))
+          const g = decodeJson<GameStatePayload>(md.data)
+          setGame(g)
+          if (intentionalLeavePendingRef.current && g.status === 'completed') {
+            intentionalLeaveResolveRef.current?.()
+            intentionalLeaveResolveRef.current = null
+          }
         } else if (md.op_code === OpCode.ERROR) {
           const p = decodeJson<{ message?: string }>(md.data)
           setErr(p.message ?? 'Error')
         }
+      }
+      socket.ondisconnect = () => {
+        if (intentionalLeavePendingRef.current) return
+        const m = matchRef.current
+        const s = sessionRef.current
+        if (screenRef.current !== 'game' || !m?.match_id || !s) return
+        if (reconnectBusyRef.current) return
+        reconnectBusyRef.current = true
+        setErr(null)
+        ;(async () => {
+          try {
+            let activeSession = s
+            const expired = (activeSession as unknown as { isexpired?: boolean }).isexpired
+            if (expired) {
+              activeSession = await client.sessionRefresh(activeSession)
+              setSession(activeSession)
+              sessionRef.current = activeSession
+            }
+            socketRef.current = null
+            const newSocket = await ensureSocket(activeSession)
+            const match = await newSocket.joinMatch(m.match_id)
+            matchRef.current = match
+          } catch (e) {
+            setErr(getErrorMessage(e))
+          } finally {
+            reconnectBusyRef.current = false
+          }
+        })()
       }
       socket.onmatchmakermatched = async (mm) => {
         console.log('[Matchmaker] Received matchmakermatched event:', mm)
@@ -281,7 +327,31 @@ export default function App() {
   }
 
   const leaveGame = async () => {
+    const sock = socketRef.current
+    const m = matchRef.current
+    const sess = sessionRef.current
+    if (!sock || !m?.match_id || !sess) {
+      await disconnect()
+      if (session) await ensureSocket(session)
+      setScreen('menu')
+      return
+    }
+    intentionalLeavePendingRef.current = true
+    intentionalLeaveResolveRef.current = null
+    setErr(null)
+    try {
+      const done = new Promise<void>((resolve) => {
+        intentionalLeaveResolveRef.current = resolve
+        window.setTimeout(() => resolve(), 2500)
+      })
+      await sock.sendMatchState(m.match_id, OpCode.INTENTIONAL_LEAVE, new Uint8Array())
+      await done
+    } catch (e) {
+      setErr(getErrorMessage(e))
+    }
     await disconnect()
+    intentionalLeavePendingRef.current = false
+    intentionalLeaveResolveRef.current = null
     if (session) await ensureSocket(session)
     setScreen('menu')
   }
@@ -302,9 +372,16 @@ export default function App() {
 
   const statusText = useMemo(() => {
     if (!game) return 'Connecting…'
+    const end = game.gameEndReason ?? null
     if (game.status === 'waiting_opponent') return 'Waiting for opponent'
     if (game.status === 'completed') {
       if (game.winner === 'draw') return 'Draw'
+      if (end === 'opponent_intentional_leave') return 'Opponent left the match — you win!'
+      if (end === 'opponent_claimed_forfeit')
+        return 'Your opponent claimed victory while you were disconnected.'
+      if (end === 'opponent_disconnect_timeout') return 'Opponent timed out — you win!'
+      if (end === 'you_disconnect_timeout') return 'You timed out — you lost.'
+      if (end === 'you_intentional_leave') return 'You left the match.'
       if (game.winner === myMark) return 'You win!'
       if (game.winner) return 'You lost'
       return 'Game over'
@@ -467,12 +544,17 @@ export default function App() {
               )
             })}
           </div>
+          {game.status === 'in_progress' && game.disconnectedOpponentId && (
+            <p className="sub" style={{ marginTop: '0.5rem' }}>
+              Opponent disconnected — you can wait for them to reconnect or claim victory.
+            </p>
+          )}
           {game.canClaimForfeit && (
             <button className="btn-danger" type="button" onClick={() => void claimForfeit()}>
               Claim victory (opponent disconnected)
             </button>
           )}
-          {game.forfeitGraceEndsSec && game.disconnectedOpponentId && (
+          {game.status === 'in_progress' && game.forfeitGraceEndsSec && game.disconnectedOpponentId && (
             <p className="sub" style={{ marginTop: '0.5rem' }}>
               Auto-forfeit in ~{Math.max(0, game.forfeitGraceEndsSec - Math.floor(nowTick / 1000))}s if they
               do not return.

@@ -3,7 +3,17 @@ export const OpCode = {
   STATE: 2,
   ERROR: 3,
   CLAIM_FORFEIT: 4,
+  INTENTIONAL_LEAVE: 5,
 } as const
+
+/** Viewer-specific hint for game-over copy; null means use default win/lose/draw text. */
+export type GameEndReason =
+  | null
+  | 'opponent_intentional_leave'
+  | 'you_intentional_leave'
+  | 'opponent_claimed_forfeit'
+  | 'opponent_disconnect_timeout'
+  | 'you_disconnect_timeout'
 
 export type Cell = '' | 'X' | 'O'
 
@@ -26,6 +36,8 @@ export interface GameStatePayload {
   disconnectedOpponentId: string | null
   forfeitGraceEndsSec: number | null
   canClaimForfeit: boolean
+  /** Present on newer servers; omit for older bundles. */
+  gameEndReason?: GameEndReason
 }
 
 export function encodeJson(obj: unknown): Uint8Array {

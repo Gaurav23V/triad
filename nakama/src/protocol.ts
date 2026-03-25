@@ -5,7 +5,17 @@ export const OpCode = {
   STATE: 2,
   ERROR: 3,
   CLAIM_FORFEIT: 4,
+  INTENTIONAL_LEAVE: 5,
 } as const
+
+/** Viewer-specific hint for game-over copy; null means use default win/lose/draw text. */
+export type GameEndReason =
+  | null
+  | 'opponent_intentional_leave'
+  | 'you_intentional_leave'
+  | 'opponent_claimed_forfeit'
+  | 'opponent_disconnect_timeout'
+  | 'you_disconnect_timeout'
 
 export type PlayerInfo = { userId: string; username: string }
 
@@ -23,6 +33,7 @@ export interface PublicState {
   disconnectedOpponentId: string | null
   forfeitGraceEndsSec: number | null
   canClaimForfeit: boolean
+  gameEndReason: GameEndReason
 }
 
 export interface MovePayload {

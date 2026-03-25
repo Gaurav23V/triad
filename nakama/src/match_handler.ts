@@ -7,7 +7,13 @@ import {
   type Mark,
   type GameStatus,
 } from './game_logic.js'
-import { OpCode, type PlayerInfo, type PublicState, type MovePayload } from './protocol.js'
+import {
+  OpCode,
+  type PlayerInfo,
+  type PublicState,
+  type MovePayload,
+  type GameEndReason,
+} from './protocol.js'
 import { recordMatchOutcome } from './stats.js'
 import { unregisterOpenRoom } from './room_index.js'
 
@@ -25,6 +31,12 @@ interface MatchLabel {
   mode: string
 }
 
+export type MatchCompletionReason =
+  | 'normal'
+  | 'intentional_leave'
+  | 'forfeit_claim'
+  | 'disconnect_timeout'
+
 export interface MatchState {
   label: MatchLabel
   emptyTicks: number
@@ -41,6 +53,8 @@ export interface MatchState {
   disconnectedUserId: string | null
   forfeitGraceTicksRemaining: number
   statsRecorded: boolean
+  /** Set when status becomes completed (why the match ended). */
+  completionReason: MatchCompletionReason | null
 }
 
 function nowSec(): number {
@@ -59,6 +73,26 @@ function connectedHumans(state: MatchState): nkruntime.Presence[] {
 function markForUser(state: MatchState, userId: string): Mark | null {
   if (state.players.X?.userId === userId) return 'X'
   if (state.players.O?.userId === userId) return 'O'
+  return null
+}
+
+function gameEndReasonForViewer(state: MatchState, viewerUserId: string): GameEndReason {
+  if (state.status !== 'completed') return null
+  const wr = state.winner
+  if (wr === 'draw' || wr === null) return null
+  const cr = state.completionReason
+  if (!cr || cr === 'normal') return null
+  const viewerMark = markForUser(state, viewerUserId)
+  if (!viewerMark) return null
+  if (cr === 'intentional_leave') {
+    return wr === viewerMark ? 'opponent_intentional_leave' : 'you_intentional_leave'
+  }
+  if (cr === 'forfeit_claim') {
+    return wr === viewerMark ? null : 'opponent_claimed_forfeit'
+  }
+  if (cr === 'disconnect_timeout') {
+    return wr === viewerMark ? 'opponent_disconnect_timeout' : 'you_disconnect_timeout'
+  }
   return null
 }
 
@@ -88,6 +122,7 @@ function buildPublicState(state: MatchState, viewerUserId: string): PublicState 
     disconnectedOpponentId: oppDisconnected ? state.disconnectedUserId : null,
     forfeitGraceEndsSec,
     canClaimForfeit: oppDisconnected && state.status === 'in_progress',
+    gameEndReason: gameEndReasonForViewer(state, viewerUserId),
   }
 }
 
@@ -154,6 +189,7 @@ export const matchInit: nkruntime.MatchInitFunction<MatchState> = function (
     disconnectedUserId: null,
     forfeitGraceTicksRemaining: 0,
     statsRecorded: false,
+    completionReason: null,
   }
 
   return {
@@ -175,8 +211,17 @@ export const matchJoinAttempt: nkruntime.MatchJoinAttemptFunction<MatchState> = 
 ) {
   if (presence.userId in state.presences) {
     if (state.presences[presence.userId] === null) {
-      state.joinsInProgress++
-      return { state, accept: false }
+      const mark = markForUser(state, presence.userId)
+      if (
+        mark &&
+        (state.status === 'in_progress' ||
+          state.status === 'completed' ||
+          state.status === 'waiting_opponent')
+      ) {
+        state.joinsInProgress++
+        return { state, accept: true }
+      }
+      return { state, accept: false, rejectMessage: 'cannot rejoin match' }
     }
     return { state, accept: false, rejectMessage: 'already joined' }
   }
@@ -229,6 +274,7 @@ export const matchJoin: nkruntime.MatchJoinFunction<MatchState> = function (
       state.disconnectedUserId = null
       state.forfeitGraceTicksRemaining = 0
       state.statsRecorded = false
+      state.completionReason = null
       state.turnTicksRemaining = timedTurnSec * tickRate
       unregisterOpenRoom(nk, state.label.room_code)
     }
@@ -300,6 +346,9 @@ export const matchLoop: nkruntime.MatchLoopFunction<MatchState> = function (
         state.status = 'completed'
         state.winner = wm
         state.winLine = null
+        state.completionReason = 'disconnect_timeout'
+        state.disconnectedUserId = null
+        state.forfeitGraceTicksRemaining = 0
         finalizeGame(nk, logger, state, wm)
         broadcastState(dispatcher, state)
       }
@@ -314,6 +363,7 @@ export const matchLoop: nkruntime.MatchLoopFunction<MatchState> = function (
       state.status = 'completed'
       state.winner = winner
       state.winLine = null
+      state.completionReason = 'normal'
       finalizeGame(nk, logger, state, winner)
       broadcastState(dispatcher, state)
     }
@@ -322,6 +372,40 @@ export const matchLoop: nkruntime.MatchLoopFunction<MatchState> = function (
   for (const message of messages) {
     const senderId = message.sender.userId
     const senderOnly = [message.sender]
+
+    if (message.opCode === OpCode.INTENTIONAL_LEAVE) {
+      if (state.status !== 'in_progress') {
+        dispatcher.broadcastMessage(
+          OpCode.ERROR,
+          JSON.stringify({ message: 'Cannot leave the match now.' }),
+          senderOnly,
+          null,
+          true,
+        )
+        continue
+      }
+      const senderMark = markForUser(state, senderId)
+      if (!senderMark) {
+        dispatcher.broadcastMessage(
+          OpCode.ERROR,
+          JSON.stringify({ message: 'You are not in this game.' }),
+          senderOnly,
+          null,
+          true,
+        )
+        continue
+      }
+      const winner: Mark = senderMark === 'X' ? 'O' : 'X'
+      state.status = 'completed'
+      state.winner = winner
+      state.winLine = null
+      state.disconnectedUserId = null
+      state.forfeitGraceTicksRemaining = 0
+      state.completionReason = 'intentional_leave'
+      finalizeGame(nk, logger, state, winner)
+      broadcastState(dispatcher, state)
+      continue
+    }
 
     if (message.opCode === OpCode.CLAIM_FORFEIT) {
       if (
@@ -354,6 +438,8 @@ export const matchLoop: nkruntime.MatchLoopFunction<MatchState> = function (
       state.winner = claimer
       state.winLine = null
       state.forfeitGraceTicksRemaining = 0
+      state.disconnectedUserId = null
+      state.completionReason = 'forfeit_claim'
       finalizeGame(nk, logger, state, claimer)
       broadcastState(dispatcher, state)
       continue
@@ -379,7 +465,7 @@ export const matchLoop: nkruntime.MatchLoopFunction<MatchState> = function (
     if (message.opCode !== OpCode.MOVE) {
       dispatcher.broadcastMessage(
         OpCode.ERROR,
-        JSON.stringify({ message: 'Unknown message.' }),
+        JSON.stringify({ message: 'Unknown message type.' }),
         senderOnly,
         null,
         true,
@@ -438,6 +524,7 @@ export const matchLoop: nkruntime.MatchLoopFunction<MatchState> = function (
       state.status = 'completed'
       state.winner = w.winner
       state.winLine = w.line
+      state.completionReason = 'normal'
       finalizeGame(nk, logger, state, w.winner)
       broadcastState(dispatcher, state)
       continue
@@ -447,6 +534,7 @@ export const matchLoop: nkruntime.MatchLoopFunction<MatchState> = function (
       state.status = 'completed'
       state.winner = 'draw'
       state.winLine = null
+      state.completionReason = 'normal'
       finalizeGame(nk, logger, state, 'draw')
       broadcastState(dispatcher, state)
       continue

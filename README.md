@@ -181,6 +181,7 @@ flowchart LR
 4. **Quick match** in both, or **Create room** / **Join** / **Open rooms**
 5. Verify invalid moves are rejected and the board only updates after server acceptance
 6. Disconnect one tab: the other side should show disconnect UI / **Claim victory** / timeout behavior
+7. **Intentional leave** (**Leave match**): the remaining player should win immediately (no reconnect countdown). **Involuntary disconnect** (network drop): the client tries to rejoin the same match; if the opponent has not claimed victory and the grace timer has not expired, the game continues; otherwise the returning player sees that the opponent claimed victory or that they timed out.
 
 ## Automated tests
 
